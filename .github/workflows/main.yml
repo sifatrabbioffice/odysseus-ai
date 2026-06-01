@@ -1,331 +1,374 @@
+cat > /mnt/user-data/outputs/build-ios-ipa.yml << 'WORKFLOW'
 name: Build Odysseus iOS IPA
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      server_url:
-        description: 'Odysseus server URL (shown inside the app)'
-        required: false
-        default: 'http://192.168.1.105:7000
-'
 
 jobs:
   build-ipa:
     runs-on: macos-latest
     timeout-minutes: 40
 
-    env:
-      APP_NAME: Odysseus
-      BUNDLE_ID: com.odysseus.app
-      SCHEME: Odysseus
-      SERVER_URL: ${{ github.event.inputs.server_url || 'http://localhost:7000' }}
-
     steps:
-      # ── 1. Checkout the Odysseus repo ────────────────────────────────────
       - name: Checkout Odysseus
         uses: actions/checkout@v4
         with:
           repository: pewdiepie-archdaemon/odysseus
           path: odysseus-src
 
-      # ── 2. Generate the Xcode project from scratch ───────────────────────
       - name: Generate Xcode project
         run: |
           mkdir -p OdysseusIOS/OdysseusIOS
-          mkdir -p OdysseusIOS/OdysseusIOS.xcodeproj
 
           # ── AppDelegate.swift ────────────────────────────────────────────
           cat > OdysseusIOS/OdysseusIOS/AppDelegate.swift << 'SWIFT'
-          import UIKit
+import UIKit
 
-          @main
-          class AppDelegate: UIResponder, UIApplicationDelegate {
-              var window: UIWindow?
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate {
+    var window: UIWindow?
 
-              func application(
-                  _ application: UIApplication,
-                  didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-              ) -> Bool {
-                  window = UIWindow(frame: UIScreen.main.bounds)
-                  window?.rootViewController = ViewController()
-                  window?.makeKeyAndVisible()
-                  return true
-              }
-          }
-          SWIFT
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {
+        window = UIWindow(frame: UIScreen.main.bounds)
+        window?.rootViewController = ViewController()
+        window?.makeKeyAndVisible()
+        return true
+    }
+}
+SWIFT
 
           # ── ViewController.swift ─────────────────────────────────────────
-          SERVER="${{ env.SERVER_URL }}"
-          cat > OdysseusIOS/OdysseusIOS/ViewController.swift << SWIFT
-          import UIKit
-          import WebKit
+          cat > OdysseusIOS/OdysseusIOS/ViewController.swift << 'SWIFT'
+import UIKit
+import WebKit
 
-          class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
-              private var webView: WKWebView!
-              private var loadingView: UIView!
-              private var activityIndicator: UIActivityIndicatorView!
-              private var retryButton: UIButton!
-              private var statusLabel: UILabel!
+    private var webView: WKWebView!
+    private var loadingView: UIView!
+    private var activityIndicator: UIActivityIndicatorView!
+    private var retryButton: UIButton!
+    private var statusLabel: UILabel!
+    private var settingsButton: UIButton!
 
-              private let serverURL = "${SERVER}"
+    private let defaults = UserDefaults.standard
+    private let urlKey = "odysseus_server_url"
 
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  setupWebView()
-                  setupLoadingOverlay()
-                  loadOdysseus()
-              }
+    private var serverURL: String {
+        get { defaults.string(forKey: urlKey) ?? "" }
+        set { defaults.set(newValue, forKey: urlKey) }
+    }
 
-              // MARK: – WebView Setup
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupWebView()
+        setupLoadingOverlay()
+        setupSettingsButton()
 
-              private func setupWebView() {
-                  let config = WKWebViewConfiguration()
-                  config.allowsInlineMediaPlayback = true
-                  config.mediaTypesRequiringUserActionForPlayback = []
+        if serverURL.isEmpty {
+            showURLSetup(firstTime: true)
+        } else {
+            loadOdysseus()
+        }
+    }
 
-                  let prefs = WKWebpagePreferences()
-                  prefs.allowsContentJavaScript = true
-                  config.defaultWebpagePreferences = prefs
+    // MARK: – WebView
 
-                  webView = WKWebView(frame: view.bounds, configuration: config)
-                  webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  webView.navigationDelegate = self
-                  webView.uiDelegate = self
-                  webView.allowsBackForwardNavigationGestures = true
-                  webView.scrollView.contentInsetAdjustmentBehavior = .automatic
+    private func setupWebView() {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        let prefs = WKWebpagePreferences()
+        prefs.allowsContentJavaScript = true
+        config.defaultWebpagePreferences = prefs
 
-                  // Dark / light background matching
-                  webView.backgroundColor = UIColor { t in
-                      t.userInterfaceStyle == .dark
-                          ? UIColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1)
-                          : .white
-                  }
-                  webView.isOpaque = false
+        webView = WKWebView(frame: view.bounds, configuration: config)
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.scrollView.contentInsetAdjustmentBehavior = .automatic
+        view.addSubview(webView)
+    }
 
-                  view.addSubview(webView)
-              }
+    // MARK: – Settings Button (top right gear icon)
 
-              // MARK: – Loading Overlay
+    private func setupSettingsButton() {
+        settingsButton = UIButton(type: .system)
+        let img = UIImage(systemName: "gearshape.fill")
+        settingsButton.setImage(img, for: .normal)
+        settingsButton.tintColor = .white.withAlphaComponent(0.7)
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+        settingsButton.addTarget(self, action: #selector(showURLSetupTapped), for: .touchUpInside)
+        view.addSubview(settingsButton)
+        NSLayoutConstraint.activate([
+            settingsButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            settingsButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            settingsButton.widthAnchor.constraint(equalToConstant: 36),
+            settingsButton.heightAnchor.constraint(equalToConstant: 36)
+        ])
+    }
 
-              private func setupLoadingOverlay() {
-                  loadingView = UIView(frame: view.bounds)
-                  loadingView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  loadingView.backgroundColor = UIColor { t in
-                      t.userInterfaceStyle == .dark
-                          ? UIColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1)
-                          : UIColor(red: 0.97, green: 0.97, blue: 0.97, alpha: 1)
-                  }
+    // MARK: – Loading Overlay
 
-                  // App icon / title
-                  let titleLabel = UILabel()
-                  titleLabel.text = "Odysseus"
-                  titleLabel.font = UIFont.systemFont(ofSize: 28, weight: .semibold)
-                  titleLabel.textAlignment = .center
-                  titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    private func setupLoadingOverlay() {
+        loadingView = UIView(frame: view.bounds)
+        loadingView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        loadingView.backgroundColor = UIColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1)
 
-                  let subtitleLabel = UILabel()
-                  subtitleLabel.text = "Self-hosted AI workspace"
-                  subtitleLabel.font = UIFont.systemFont(ofSize: 14, weight: .regular)
-                  subtitleLabel.textColor = .secondaryLabel
-                  subtitleLabel.textAlignment = .center
-                  subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        let titleLabel = UILabel()
+        titleLabel.text = "Odysseus"
+        titleLabel.font = UIFont.systemFont(ofSize: 32, weight: .bold)
+        titleLabel.textColor = .white
+        titleLabel.textAlignment = .center
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-                  activityIndicator = UIActivityIndicatorView(style: .large)
-                  activityIndicator.translatesAutoresizingMaskIntoConstraints = false
-                  activityIndicator.startAnimating()
+        let subtitleLabel = UILabel()
+        subtitleLabel.text = "Self-hosted AI workspace"
+        subtitleLabel.font = UIFont.systemFont(ofSize: 15)
+        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.5)
+        subtitleLabel.textAlignment = .center
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-                  statusLabel = UILabel()
-                  statusLabel.text = "Connecting to Odysseus…"
-                  statusLabel.font = UIFont.systemFont(ofSize: 13)
-                  statusLabel.textColor = .secondaryLabel
-                  statusLabel.textAlignment = .center
-                  statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        activityIndicator = UIActivityIndicatorView(style: .large)
+        activityIndicator.color = .white
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        activityIndicator.startAnimating()
 
-                  retryButton = UIButton(type: .system)
-                  retryButton.setTitle("Retry", for: .normal)
-                  retryButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
-                  retryButton.translatesAutoresizingMaskIntoConstraints = false
-                  retryButton.isHidden = true
-                  retryButton.addTarget(self, action: #selector(retryTapped), for: .touchUpInside)
+        statusLabel = UILabel()
+        statusLabel.text = "Connecting…"
+        statusLabel.font = UIFont.systemFont(ofSize: 13)
+        statusLabel.textColor = UIColor.white.withAlphaComponent(0.5)
+        statusLabel.textAlignment = .center
+        statusLabel.numberOfLines = 0
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-                  let stack = UIStackView(arrangedSubviews: [
-                      titleLabel, subtitleLabel, activityIndicator, statusLabel, retryButton
-                  ])
-                  stack.axis = .vertical
-                  stack.spacing = 12
-                  stack.alignment = .center
-                  stack.translatesAutoresizingMaskIntoConstraints = false
+        retryButton = UIButton(type: .system)
+        retryButton.setTitle("Retry", for: .normal)
+        retryButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        retryButton.translatesAutoresizingMaskIntoConstraints = false
+        retryButton.isHidden = true
+        retryButton.addTarget(self, action: #selector(retryTapped), for: .touchUpInside)
 
-                  loadingView.addSubview(stack)
-                  NSLayoutConstraint.activate([
-                      stack.centerXAnchor.constraint(equalTo: loadingView.centerXAnchor),
-                      stack.centerYAnchor.constraint(equalTo: loadingView.centerYAnchor),
-                      stack.leadingAnchor.constraint(greaterThanOrEqualTo: loadingView.leadingAnchor, constant: 32),
-                      stack.trailingAnchor.constraint(lessThanOrEqualTo: loadingView.trailingAnchor, constant: -32)
-                  ])
+        let changeURLButton = UIButton(type: .system)
+        changeURLButton.setTitle("Change Server URL", for: .normal)
+        changeURLButton.titleLabel?.font = UIFont.systemFont(ofSize: 14)
+        changeURLButton.tintColor = UIColor.white.withAlphaComponent(0.6)
+        changeURLButton.translatesAutoresizingMaskIntoConstraints = false
+        changeURLButton.addTarget(self, action: #selector(showURLSetupTapped), for: .touchUpInside)
 
-                  view.addSubview(loadingView)
-              }
+        let stack = UIStackView(arrangedSubviews: [
+            titleLabel, subtitleLabel, activityIndicator, statusLabel, retryButton, changeURLButton
+        ])
+        stack.axis = .vertical
+        stack.spacing = 14
+        stack.alignment = .center
+        stack.setCustomSpacing(4, after: titleLabel)
+        stack.setCustomSpacing(28, after: subtitleLabel)
+        stack.translatesAutoresizingMaskIntoConstraints = false
 
-              // MARK: – Load
+        loadingView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: loadingView.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: loadingView.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: loadingView.leadingAnchor, constant: 32),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: loadingView.trailingAnchor, constant: -32)
+        ])
 
-              private func loadOdysseus() {
-                  guard let url = URL(string: serverURL) else { return }
-                  let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-                  webView.load(request)
-              }
+        view.addSubview(loadingView)
+        view.bringSubviewToFront(settingsButton)
+    }
 
-              @objc private func retryTapped() {
-                  retryButton.isHidden = true
-                  activityIndicator.startAnimating()
-                  statusLabel.text = "Connecting to Odysseus…"
-                  loadOdysseus()
-              }
+    // MARK: – URL Setup Dialog
 
-              // MARK: – WKNavigationDelegate
+    @objc private func showURLSetupTapped() {
+        showURLSetup(firstTime: false)
+    }
 
-              func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                  UIView.animate(withDuration: 0.3) {
-                      self.loadingView.alpha = 0
-                  } completion: { _ in
-                      self.loadingView.isHidden = true
-                  }
-              }
+    private func showURLSetup(firstTime: Bool) {
+        let title = firstTime ? "Welcome to Odysseus" : "Change Server URL"
+        let message = "Enter the IP address of your computer running Odysseus.\n\nExample:\nhttp://192.168.1.100:7000\n\nMake sure your phone and computer are on the same Wi-Fi network."
 
-              func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-                  showError(error)
-              }
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "http://192.168.1.100:7000"
+            field.text = self.serverURL
+            field.keyboardType = .URL
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+            field.clearButtonMode = .always
+        }
 
-              func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-                  showError(error)
-              }
+        let connectAction = UIAlertAction(title: "Connect", style: .default) { [weak self, weak alert] _ in
+            guard let self = self else { return }
+            var input = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // Auto-add http:// if missing
+            if !input.isEmpty && !input.hasPrefix("http") {
+                input = "http://" + input
+            }
+            // Auto-add :7000 if no port specified and it's a plain IP
+            if !input.isEmpty {
+                self.serverURL = input
+                self.loadingView.isHidden = false
+                self.loadingView.alpha = 1
+                self.activityIndicator.startAnimating()
+                self.statusLabel.text = "Connecting to \(input)…"
+                self.retryButton.isHidden = true
+                self.loadOdysseus()
+            }
+        }
 
-              private func showError(_ error: Error) {
-                  activityIndicator.stopAnimating()
-                  statusLabel.text = "Could not reach Odysseus at:\n\(serverURL)\n\n\(error.localizedDescription)"
-                  statusLabel.numberOfLines = 0
-                  retryButton.isHidden = false
-                  loadingView.isHidden = false
-                  loadingView.alpha = 1
-              }
+        alert.addAction(connectAction)
+        if !firstTime {
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        }
+        alert.preferredAction = connectAction
+        present(alert, animated: true)
+    }
 
-              // MARK: – WKUIDelegate (allow alert/confirm dialogs from Odysseus JS)
+    // MARK: – Load
 
-              func webView(_ webView: WKWebView,
-                           runJavaScriptAlertPanelWithMessage message: String,
-                           initiatedByFrame frame: WKFrameInfo,
-                           completionHandler: @escaping () -> Void) {
-                  let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
-                  present(alert, animated: true)
-              }
+    private func loadOdysseus() {
+        guard let url = URL(string: serverURL) else {
+            showURLSetup(firstTime: true)
+            return
+        }
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        webView.load(request)
+    }
 
-              func webView(_ webView: WKWebView,
-                           runJavaScriptConfirmPanelWithMessage message: String,
-                           initiatedByFrame frame: WKFrameInfo,
-                           completionHandler: @escaping (Bool) -> Void) {
-                  let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
-                  alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
-                  present(alert, animated: true)
-              }
-          }
-          SWIFT
+    @objc private func retryTapped() {
+        retryButton.isHidden = true
+        activityIndicator.startAnimating()
+        statusLabel.text = "Connecting…"
+        loadOdysseus()
+    }
+
+    // MARK: – WKNavigationDelegate
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        UIView.animate(withDuration: 0.3) { self.loadingView.alpha = 0 }
+            completion: { _ in self.loadingView.isHidden = true }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        showError(error)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        showError(error)
+    }
+
+    private func showError(_ error: Error) {
+        activityIndicator.stopAnimating()
+        statusLabel.text = "❌ Could not connect to:\n\(serverURL)\n\nCheck your IP address and make sure Odysseus is running."
+        retryButton.isHidden = false
+        loadingView.isHidden = false
+        loadingView.alpha = 1
+    }
+
+    // MARK: – WKUIDelegate
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping () -> Void) {
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
+        present(alert, animated: true)
+    }
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (Bool) -> Void) {
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+        present(alert, animated: true)
+    }
+}
+SWIFT
 
           # ── Info.plist ───────────────────────────────────────────────────
           cat > OdysseusIOS/OdysseusIOS/Info.plist << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleName</key>
-              <string>Odysseus</string>
-              <key>CFBundleDisplayName</key>
-              <string>Odysseus</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.odysseus.app</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0</string>
-              <key>CFBundleExecutable</key>
-              <string>$(EXECUTABLE_NAME)</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>UILaunchStoryboardName</key>
-              <string></string>
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationLandscapeLeft</string>
-                  <string>UIInterfaceOrientationLandscapeRight</string>
-              </array>
-              <key>UISupportedInterfaceOrientations~ipad</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
-                  <string>UIInterfaceOrientationLandscapeLeft</string>
-                  <string>UIInterfaceOrientationLandscapeRight</string>
-              </array>
-              <key>NSAppTransportSecurity</key>
-              <dict>
-                  <key>NSAllowsArbitraryLoads</key>
-                  <true/>
-              </dict>
-              <key>UIRequiresFullScreen</key>
-              <false/>
-              <key>UIStatusBarStyle</key>
-              <string>UIStatusBarStyleDefault</string>
-          </dict>
-          </plist>
-          PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Odysseus</string>
+    <key>CFBundleDisplayName</key><string>Odysseus</string>
+    <key>CFBundleIdentifier</key><string>com.odysseus.app</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>1.1</string>
+    <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>LSRequiresIPhoneOS</key><true/>
+    <key>UILaunchStoryboardName</key><string></string>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key><true/>
+    </dict>
+    <key>UIStatusBarStyle</key><string>UIStatusBarStyleLightContent</string>
+    <key>UIViewControllerBasedStatusBarAppearance</key><false/>
+</dict>
+</plist>
+PLIST
 
-          # ── project.pbxproj ──────────────────────────────────────────────
-          # Ruby/PlistBuddy approach: use xcodegen via homebrew for clean project gen
-          brew install xcodegen --quiet 2>/dev/null || true
-
+          # ── project.yml for xcodegen ─────────────────────────────────────
           cat > OdysseusIOS/project.yml << 'YML'
-          name: Odysseus
-          options:
-            bundleIdPrefix: com.odysseus
-            deploymentTarget:
-              iOS: "15.0"
-            xcodeVersion: "15"
-            createIntermediateGroups: true
+name: Odysseus
+options:
+  bundleIdPrefix: com.odysseus
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
 
-          targets:
-            Odysseus:
-              type: application
-              platform: iOS
-              deploymentTarget: "15.0"
-              sources:
-                - path: OdysseusIOS
-              info:
-                path: OdysseusIOS/Info.plist
-              settings:
-                base:
-                  PRODUCT_BUNDLE_IDENTIFIER: com.odysseus.app
-                  PRODUCT_NAME: Odysseus
-                  SWIFT_VERSION: "5.9"
-                  IPHONEOS_DEPLOYMENT_TARGET: "15.0"
-                  CODE_SIGN_IDENTITY: ""
-                  CODE_SIGNING_REQUIRED: "NO"
-                  CODE_SIGNING_ALLOWED: "NO"
-                  SKIP_INSTALL: "NO"
-                  ENABLE_BITCODE: "NO"
-          YML
+targets:
+  Odysseus:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: OdysseusIOS
+    info:
+      path: OdysseusIOS/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.odysseus.app
+        PRODUCT_NAME: Odysseus
+        SWIFT_VERSION: "5.9"
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+        SKIP_INSTALL: "NO"
+        ENABLE_BITCODE: "NO"
+YML
 
-          cd OdysseusIOS
-          xcodegen generate
+          brew install xcodegen --quiet 2>/dev/null || true
+          cd OdysseusIOS && xcodegen generate
 
-      # ── 3. Build the app (no signing) ───────────────────────────────────
-      - name: Build Odysseus.app
+      - name: Build
         run: |
           cd OdysseusIOS
           xcodebuild \
@@ -338,57 +381,22 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             CONFIGURATION_BUILD_DIR="${{ github.workspace }}/build/output" \
-            clean build \
-            | xcpretty || cat /tmp/build.log
+            clean build | xcpretty
 
-      # ── 4. Package into IPA ──────────────────────────────────────────────
       - name: Package IPA
         run: |
-          BUILD_DIR="${{ github.workspace }}/build/output"
           IPA_DIR="${{ github.workspace }}/build/ipa"
           mkdir -p "${IPA_DIR}/Payload"
-
-          # Copy the .app bundle
-          cp -r "${BUILD_DIR}/Odysseus.app" "${IPA_DIR}/Payload/"
-
-          # Zip into IPA
+          cp -r "${{ github.workspace }}/build/output/Odysseus.app" "${IPA_DIR}/Payload/"
           cd "${IPA_DIR}"
           zip -r "${{ github.workspace }}/build/Odysseus.ipa" Payload
-
-          echo "✅ IPA built successfully"
           ls -lh "${{ github.workspace }}/build/Odysseus.ipa"
 
-      # ── 5. Upload IPA as artifact ────────────────────────────────────────
-      - name: Upload IPA artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Odysseus-iOS-IPA
           path: build/Odysseus.ipa
           retention-days: 30
-
-      # ── 6. Print install instructions ───────────────────────────────────
-      - name: Install instructions
-        run: |
-          echo ""
-          echo "════════════════════════════════════════════════════════"
-          echo "  ✅  Odysseus.ipa built successfully!"
-          echo "════════════════════════════════════════════════════════"
-          echo ""
-          echo "  This is an UNSIGNED IPA (no Apple Developer account needed)."
-          echo "  Install options:"
-          echo ""
-          echo "  1. AltStore (free, personal use)"
-          echo "     → https://altstore.io"
-          echo "     → Sideload Odysseus.ipa via AltStore on your iPhone/iPad"
-          echo ""
-          echo "  2. Sideloadly (free)"
-          echo "     → https://sideloadly.io"
-          echo "     → Drag Odysseus.ipa into Sideloadly"
-          echo ""
-          echo "  3. Apple Developer account (paid \$99/yr)"
-          echo "     → Re-sign the IPA with your provisioning profile"
-          echo "     → Deploy via TestFlight or direct install"
-          echo ""
-          echo "  Once installed, open the app and point it at your"
-          echo "  Odysseus server URL in the app settings."
-          echo "════════════════════════════════════════════════════════"
+WORKFLOW
+echo "Done"
