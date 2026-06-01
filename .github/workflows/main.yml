@@ -12,7 +12,7 @@ on:
 
 jobs:
   build-ipa:
-    runs-on: macos-14  # Apple Silicon (M1/M2) রানার দ্রুত বিল্ডের জন্য
+    runs-on: macos-14  # Apple Silicon M1/M2 Runner
     timeout-minutes: 30
 
     env:
@@ -61,7 +61,7 @@ jobs:
           }
           SWIFT
 
-          # SceneDelegate.swift তৈরি (আধুনিক iOS স্ট্যান্ডার্ডের জন্য)
+          # SceneDelegate.swift তৈরি
           cat > OdysseusIOS/OdysseusIOS/SceneDelegate.swift << 'SWIFT'
           import UIKit
 
@@ -77,7 +77,7 @@ jobs:
           }
           SWIFT
 
-          # ViewController.swift তৈরি (আপনার WebView কোডসহ)
+          # ViewController.swift তৈরি
           cat > OdysseusIOS/OdysseusIOS/ViewController.swift << 'SWIFT'
           import UIKit
           import WebKit
@@ -89,7 +89,6 @@ jobs:
               private var retryButton: UIButton!
               private var statusLabel: UILabel!
               
-              // Environment variable থেকে রানটাইমে URL ইনজেক্ট হবে
               private let serverURL = "${{ env.SERVER_URL }}"
 
               override func viewDidLoad() {
@@ -248,7 +247,7 @@ jobs:
           </plist>
           PLIST
 
-      # ── ৪. XcodeGen দিয়ে প্রোজেক্ট স্ট্রাকচার জেনারেট করা (সংস্করণ ফিক্সসহ) ──
+      # ── ৪. XcodeGen দিয়ে প্রোজেক্ট স্ট্রাকচার এবং অবজেক্ট ভার্সন ফোর্স-ফিক্স ──
       - name: Generate Xcode Project File
         run: |
           cat > OdysseusIOS/project.yml << 'YML'
@@ -257,9 +256,6 @@ jobs:
             bundleIdPrefix: com.odysseus
             deploymentTarget:
               iOS: "15.0"
-            # Xcode 15.4 রানারের সাথে সামঞ্জস্যপূর্ণ ফরম্যাট ফিক্স করা হলো
-            xcodeVersion: "15.0"
-            objectVersion: 56
           targets:
             Odysseus:
               type: application
@@ -278,6 +274,10 @@ jobs:
           YML
           cd OdysseusIOS
           xcodegen generate
+          
+          # ── [CRITICAL FIX]: Force modify objectVersion from 77 to 56 inside pbxproj ──
+          echo "Forcing objectVersion rewrite to fix Xcode 15 compatibility..."
+          sed -i '' 's/objectVersion = [0-9]*/objectVersion = 56/g' Odysseus.xcodeproj/project.pbxproj
 
       # ── ৫. প্রপার বিল্ড প্রসেস (Xcode 15 এর জন্য নির্দিষ্ট করা) ─────────────────
       - name: Compile and Archive App Bundle
