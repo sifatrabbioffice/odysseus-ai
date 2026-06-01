@@ -8,7 +8,8 @@ on:
       server_url:
         description: 'Odysseus server URL (shown inside the app)'
         required: false
-        default: 'http://localhost:7000'
+        default: 'http://192.168.1.105:7000
+'
 
 jobs:
   build-ipa:
