@@ -398,5 +398,4 @@ YML
           name: Odysseus-iOS-IPA
           path: build/Odysseus.ipa
           retention-days: 30
-WORKFLOW
-echo "Done"
+
