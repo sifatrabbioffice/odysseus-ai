@@ -1,393 +1,261 @@
-name: Build Odysseus iOS IPA
+name: Build GameHub IPA (All-in-One)
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
-    inputs:
-      server_url:
-        description: 'Odysseus server URL (shown inside the app)'
-        required: false
-        default: 'http://localhost:7000'
 
 jobs:
-  build-ipa:
+  build:
     runs-on: macos-latest
-    timeout-minutes: 40
-
-    env:
-      APP_NAME: Odysseus
-      BUNDLE_ID: com.odysseus.app
-      SCHEME: Odysseus
-      SERVER_URL: ${{ github.event.inputs.server_url || 'http://localhost:7000' }}
 
     steps:
-      # ── 1. Checkout the Odysseus repo ────────────────────────────────────
-      - name: Checkout Odysseus
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          repository: pewdiepie-archdaemon/odysseus
-          path: odysseus-src
 
-      # ── 2. Generate the Xcode project from scratch ───────────────────────
-      - name: Generate Xcode project
+      - name: Select Latest Xcode
         run: |
-          mkdir -p OdysseusIOS/OdysseusIOS
-          mkdir -p OdysseusIOS/OdysseusIOS.xcodeproj
+          sudo xcode-select -s /Applications/Xcode_16.app
+          xcodebuild -version
 
-          # ── AppDelegate.swift ────────────────────────────────────────────
-          cat > OdysseusIOS/OdysseusIOS/AppDelegate.swift << 'SWIFT'
-          import UIKit
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
-          @main
-          class AppDelegate: UIResponder, UIApplicationDelegate {
-              var window: UIWindow?
+      - name: Create Full Project Structure
+        run: |
+          mkdir -p GameHub/GameHub/Sources/{Input,Game,Views}
+          mkdir -p GameHub/GameHub/Resources
 
-              func application(
-                  _ application: UIApplication,
-                  didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-              ) -> Bool {
-                  window = UIWindow(frame: UIScreen.main.bounds)
-                  window?.rootViewController = ViewController()
-                  window?.makeKeyAndVisible()
-                  return true
-              }
-          }
-          SWIFT
+          # ==================== Project.yml (XcodeGen) ====================
+          cat > GameHub/project.yml << 'EOF'
+          name: GameHub
+          options:
+            bundleIdPrefix: com.gamehub
+            deploymentTarget:
+              iOS: "17.0"
+            usesTabs: false
+            indentWidth: 4
+            tabWidth: 4
 
-          # ── ViewController.swift ─────────────────────────────────────────
-          SERVER="${{ env.SERVER_URL }}"
-          cat > OdysseusIOS/OdysseusIOS/ViewController.swift << SWIFT
-          import UIKit
-          import WebKit
+          targets:
+            GameHub:
+              type: application
+              platform: iOS
+              deploymentTarget: "17.0"
+              sources:
+                - path: GameHub/Sources
+                - path: GameHub/Resources
+              settings:
+                base:
+                  CODE_SIGN_IDENTITY: ""
+                  CODE_SIGNING_REQUIRED: NO
+                  CODE_SIGNING_ALLOWED: NO
+                  ENABLE_BITCODE: NO
+              dependencies:
+                - framework: GameController
+                - framework: CoreHaptics
+                - framework: SpriteKit
+              info:
+                path: GameHub/Info.plist
+                properties:
+                  UILaunchScreen: {}
+                  UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+          EOF
 
-          class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
-
-              private var webView: WKWebView!
-              private var loadingView: UIView!
-              private var activityIndicator: UIActivityIndicatorView!
-              private var retryButton: UIButton!
-              private var statusLabel: UILabel!
-
-              private let serverURL = "${SERVER}"
-
-              override func viewDidLoad() {
-                  super.viewDidLoad()
-                  setupWebView()
-                  setupLoadingOverlay()
-                  loadOdysseus()
-              }
-
-              // MARK: – WebView Setup
-
-              private func setupWebView() {
-                  let config = WKWebViewConfiguration()
-                  config.allowsInlineMediaPlayback = true
-                  config.mediaTypesRequiringUserActionForPlayback = []
-
-                  let prefs = WKWebpagePreferences()
-                  prefs.allowsContentJavaScript = true
-                  config.defaultWebpagePreferences = prefs
-
-                  webView = WKWebView(frame: view.bounds, configuration: config)
-                  webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  webView.navigationDelegate = self
-                  webView.uiDelegate = self
-                  webView.allowsBackForwardNavigationGestures = true
-                  webView.scrollView.contentInsetAdjustmentBehavior = .automatic
-
-                  // Dark / light background matching
-                  webView.backgroundColor = UIColor { t in
-                      t.userInterfaceStyle == .dark
-                          ? UIColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1)
-                          : .white
-                  }
-                  webView.isOpaque = false
-
-                  view.addSubview(webView)
-              }
-
-              // MARK: – Loading Overlay
-
-              private func setupLoadingOverlay() {
-                  loadingView = UIView(frame: view.bounds)
-                  loadingView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                  loadingView.backgroundColor = UIColor { t in
-                      t.userInterfaceStyle == .dark
-                          ? UIColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1)
-                          : UIColor(red: 0.97, green: 0.97, blue: 0.97, alpha: 1)
-                  }
-
-                  // App icon / title
-                  let titleLabel = UILabel()
-                  titleLabel.text = "Odysseus"
-                  titleLabel.font = UIFont.systemFont(ofSize: 28, weight: .semibold)
-                  titleLabel.textAlignment = .center
-                  titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-                  let subtitleLabel = UILabel()
-                  subtitleLabel.text = "Self-hosted AI workspace"
-                  subtitleLabel.font = UIFont.systemFont(ofSize: 14, weight: .regular)
-                  subtitleLabel.textColor = .secondaryLabel
-                  subtitleLabel.textAlignment = .center
-                  subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-                  activityIndicator = UIActivityIndicatorView(style: .large)
-                  activityIndicator.translatesAutoresizingMaskIntoConstraints = false
-                  activityIndicator.startAnimating()
-
-                  statusLabel = UILabel()
-                  statusLabel.text = "Connecting to Odysseus…"
-                  statusLabel.font = UIFont.systemFont(ofSize: 13)
-                  statusLabel.textColor = .secondaryLabel
-                  statusLabel.textAlignment = .center
-                  statusLabel.translatesAutoresizingMaskIntoConstraints = false
-
-                  retryButton = UIButton(type: .system)
-                  retryButton.setTitle("Retry", for: .normal)
-                  retryButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
-                  retryButton.translatesAutoresizingMaskIntoConstraints = false
-                  retryButton.isHidden = true
-                  retryButton.addTarget(self, action: #selector(retryTapped), for: .touchUpInside)
-
-                  let stack = UIStackView(arrangedSubviews: [
-                      titleLabel, subtitleLabel, activityIndicator, statusLabel, retryButton
-                  ])
-                  stack.axis = .vertical
-                  stack.spacing = 12
-                  stack.alignment = .center
-                  stack.translatesAutoresizingMaskIntoConstraints = false
-
-                  loadingView.addSubview(stack)
-                  NSLayoutConstraint.activate([
-                      stack.centerXAnchor.constraint(equalTo: loadingView.centerXAnchor),
-                      stack.centerYAnchor.constraint(equalTo: loadingView.centerYAnchor),
-                      stack.leadingAnchor.constraint(greaterThanOrEqualTo: loadingView.leadingAnchor, constant: 32),
-                      stack.trailingAnchor.constraint(lessThanOrEqualTo: loadingView.trailingAnchor, constant: -32)
-                  ])
-
-                  view.addSubview(loadingView)
-              }
-
-              // MARK: – Load
-
-              private func loadOdysseus() {
-                  guard let url = URL(string: serverURL) else { return }
-                  let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-                  webView.load(request)
-              }
-
-              @objc private func retryTapped() {
-                  retryButton.isHidden = true
-                  activityIndicator.startAnimating()
-                  statusLabel.text = "Connecting to Odysseus…"
-                  loadOdysseus()
-              }
-
-              // MARK: – WKNavigationDelegate
-
-              func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                  UIView.animate(withDuration: 0.3) {
-                      self.loadingView.alpha = 0
-                  } completion: { _ in
-                      self.loadingView.isHidden = true
-                  }
-              }
-
-              func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-                  showError(error)
-              }
-
-              func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-                  showError(error)
-              }
-
-              private func showError(_ error: Error) {
-                  activityIndicator.stopAnimating()
-                  statusLabel.text = "Could not reach Odysseus at:\n\(serverURL)\n\n\(error.localizedDescription)"
-                  statusLabel.numberOfLines = 0
-                  retryButton.isHidden = false
-                  loadingView.isHidden = false
-                  loadingView.alpha = 1
-              }
-
-              // MARK: – WKUIDelegate (allow alert/confirm dialogs from Odysseus JS)
-
-              func webView(_ webView: WKWebView,
-                           runJavaScriptAlertPanelWithMessage message: String,
-                           initiatedByFrame frame: WKFrameInfo,
-                           completionHandler: @escaping () -> Void) {
-                  let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
-                  present(alert, animated: true)
-              }
-
-              func webView(_ webView: WKWebView,
-                           runJavaScriptConfirmPanelWithMessage message: String,
-                           initiatedByFrame frame: WKFrameInfo,
-                           completionHandler: @escaping (Bool) -> Void) {
-                  let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-                  alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
-                  alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
-                  present(alert, animated: true)
-              }
-          }
-          SWIFT
-
-          # ── Info.plist ───────────────────────────────────────────────────
-          cat > OdysseusIOS/OdysseusIOS/Info.plist << 'PLIST'
+          # ==================== Info.plist ====================
+          cat > GameHub/GameHub/Info.plist << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleName</key>
-              <string>Odysseus</string>
-              <key>CFBundleDisplayName</key>
-              <string>Odysseus</string>
               <key>CFBundleIdentifier</key>
-              <string>com.odysseus.app</string>
+              <string>com.gamehub.GameHub</string>
+              <key>CFBundleName</key>
+              <string>GameHub</string>
               <key>CFBundleVersion</key>
-              <string>1</string>
+              <string>1.0</string>
               <key>CFBundleShortVersionString</key>
               <string>1.0</string>
               <key>CFBundleExecutable</key>
-              <string>$(EXECUTABLE_NAME)</string>
+              <string>GameHub</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>UILaunchStoryboardName</key>
-              <string></string>
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationLandscapeLeft</string>
-                  <string>UIInterfaceOrientationLandscapeRight</string>
-              </array>
-              <key>UISupportedInterfaceOrientations~ipad</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
-                  <string>UIInterfaceOrientationLandscapeLeft</string>
-                  <string>UIInterfaceOrientationLandscapeRight</string>
-              </array>
-              <key>NSAppTransportSecurity</key>
-              <dict>
-                  <key>NSAllowsArbitraryLoads</key>
-                  <true/>
-              </dict>
-              <key>UIRequiresFullScreen</key>
-              <false/>
-              <key>UIStatusBarStyle</key>
-              <string>UIStatusBarStyleDefault</string>
           </dict>
           </plist>
-          PLIST
+          EOF
 
-          # ── project.pbxproj ──────────────────────────────────────────────
-          # Ruby/PlistBuddy approach: use xcodegen via homebrew for clean project gen
-          brew install xcodegen --quiet 2>/dev/null || true
+          # ==================== ControllerInput.swift ====================
+          cat > GameHub/GameHub/Sources/Input/ControllerInput.swift << 'SWIFT'
+          import GameController
+          import CoreHaptics
+          import Combine
 
-          cat > OdysseusIOS/project.yml << 'YML'
-          name: Odysseus
-          options:
-            bundleIdPrefix: com.odysseus
-            deploymentTarget:
-              iOS: "15.0"
-            xcodeVersion: "15"
-            createIntermediateGroups: true
+          class ControllerInput: ObservableObject {
+              static let shared = ControllerInput()
+              
+              @Published var leftStick: CGPoint = .zero
+              @Published var rightStick: CGPoint = .zero
+              @Published var pressedButtons: Set<String> = []
+              
+              private var hapticEngine: CHHapticEngine?
+              private var gcController: GCVirtualController?
+              private var cancellables = Set<AnyCancellable>()
+              
+              private init() {
+                  setupHaptics()
+                  setupVirtualController()
+              }
+              
+              private func setupVirtualController() {
+                  let config = GCVirtualController.Configuration()
+                  config.elements = [
+                      GCInputLeftThumbstick, GCInputRightThumbstick,
+                      GCInputButtonA, GCInputButtonB, GCInputButtonX, GCInputButtonY,
+                      GCInputLeftShoulder, GCInputRightShoulder,
+                      GCInputLeftTrigger, GCInputRightTrigger
+                  ]
+                  gcController = GCVirtualController(configuration: config)
+                  gcController?.connect()
+              }
+              
+              private func setupHaptics() {
+                  guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
+                  do {
+                      hapticEngine = try CHHapticEngine()
+                      try hapticEngine?.start()
+                  } catch {}
+              }
+              
+              func triggerButtonHaptic(intensity: Float = 0.7) {
+                  guard let engine = hapticEngine else { return }
+                  let event = CHHapticEvent(
+                      eventType: .hapticTransient,
+                      parameters: [
+                          CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
+                          CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.5)
+                      ],
+                      relativeTime: 0
+                  )
+                  do {
+                      let pattern = try CHHapticPattern(events: [event], parameters: [])
+                      let player = try engine.makePlayer(with: pattern)
+                      try player.start(atTime: CHHapticTimeImmediate)
+                  } catch {}
+              }
+              
+              func xinputToWineVK(_ button: String) -> UInt32 {
+                  let map: [String: UInt32] = [
+                      "Cross": 0x58, "Circle": 0x42, "Square": 0x41, "Triangle": 0x59,
+                      "L1": 0x51, "R1": 0x45, "L2": 0x4C, "R2": 0x52,
+                  ]
+                  return map[button] ?? 0
+              }
+          }
+          SWIFT
 
-          targets:
-            Odysseus:
-              type: application
-              platform: iOS
-              deploymentTarget: "15.0"
-              sources:
-                - path: OdysseusIOS
-              info:
-                path: OdysseusIOS/Info.plist
-              settings:
-                base:
-                  PRODUCT_BUNDLE_IDENTIFIER: com.odysseus.app
-                  PRODUCT_NAME: Odysseus
-                  SWIFT_VERSION: "5.9"
-                  IPHONEOS_DEPLOYMENT_TARGET: "15.0"
-                  CODE_SIGN_IDENTITY: ""
-                  CODE_SIGNING_REQUIRED: "NO"
-                  CODE_SIGNING_ALLOWED: "NO"
-                  SKIP_INSTALL: "NO"
-                  ENABLE_BITCODE: "NO"
-          YML
+          # ==================== GameScene.swift ====================
+          cat > GameHub/GameHub/Sources/Game/GameScene.swift << 'SWIFT'
+          import SpriteKit
+          import Combine
 
-          cd OdysseusIOS
+          class GameScene: SKScene {
+              let controller = ControllerInput.shared
+              private var player: SKSpriteNode!
+              private var cancellables = Set<AnyCancellable>()
+              
+              override func didMove(to view: SKView) {
+                  backgroundColor = .black
+                  scaleMode = .resizeFill
+                  
+                  player = SKSpriteNode(color: .systemBlue, size: CGSize(width: 60, height: 60))
+                  player.position = CGPoint(x: frame.midX, y: frame.midY)
+                  addChild(player)
+                  
+                  // Controller binding
+                  controller.$leftStick
+                      .sink { [weak self] stick in
+                          guard let self = self else { return }
+                          self.player.position.x += stick.x * 8
+                          self.player.position.y += stick.y * 8
+                      }
+                      .store(in: &cancellables)
+              }
+              
+              override func update(_ currentTime: TimeInterval) {
+                  // Add more game logic here
+              }
+          }
+          SWIFT
+
+          # ==================== GameHubApp.swift ====================
+          cat > GameHub/GameHub/Sources/Views/GameHubApp.swift << 'SWIFT'
+          import SwiftUI
+          import SpriteKit
+
+          @main
+          struct GameHubApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+
+          struct ContentView: View {
+              var scene: SKScene {
+                  let scene = GameScene(size: CGSize(width: 1280, height: 720))
+                  scene.scaleMode = .fill
+                  return scene
+              }
+              
+              var body: some View {
+                  SpriteView(scene: scene, options: [.allowsTransparency])
+                      .ignoresSafeArea()
+                      .onAppear {
+                          ControllerInput.shared.gcController?.connect()
+                      }
+              }
+          }
+          SWIFT
+
+      - name: Generate Xcode Project
+        run: |
+          cd GameHub
           xcodegen generate
 
-      # ── 3. Build the app (no signing) ───────────────────────────────────
-      - name: Build Odysseus.app
+      - name: Build & Archive
         run: |
-          cd OdysseusIOS
-          xcodebuild \
-            -project Odysseus.xcodeproj \
-            -scheme Odysseus \
-            -configuration Release \
+          cd GameHub
+          xcodebuild clean archive \
+            -project GameHub.xcodeproj \
+            -scheme GameHub \
+            -archivePath ./build/GameHub.xcarchive \
             -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CONFIGURATION_BUILD_DIR="${{ github.workspace }}/build/output" \
-            clean build \
-            | xcpretty || cat /tmp/build.log
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
-      # ── 4. Package into IPA ──────────────────────────────────────────────
-      - name: Package IPA
+      - name: Export IPA
         run: |
-          BUILD_DIR="${{ github.workspace }}/build/output"
-          IPA_DIR="${{ github.workspace }}/build/ipa"
-          mkdir -p "${IPA_DIR}/Payload"
+          cd GameHub
+          cat > ExportOptions.plist << 'EOP'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>ad-hoc</string>
+              <key>teamID</key>
+              <string></string>
+          </dict>
+          </plist>
+          EOP
+          
+          xcodebuild -exportArchive \
+            -archivePath ./build/GameHub.xcarchive \
+            -exportOptionsPlist ./ExportOptions.plist \
+            -exportPath ./build
 
-          # Copy the .app bundle
-          cp -r "${BUILD_DIR}/Odysseus.app" "${IPA_DIR}/Payload/"
-
-          # Zip into IPA
-          cd "${IPA_DIR}"
-          zip -r "${{ github.workspace }}/build/Odysseus.ipa" Payload
-
-          echo "✅ IPA built successfully"
-          ls -lh "${{ github.workspace }}/build/Odysseus.ipa"
-
-      # ── 5. Upload IPA as artifact ────────────────────────────────────────
-      - name: Upload IPA artifact
+      - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Odysseus-iOS-IPA
-          path: build/Odysseus.ipa
-          retention-days: 30
-
-      # ── 6. Print install instructions ───────────────────────────────────
-      - name: Install instructions
-        run: |
-          echo ""
-          echo "════════════════════════════════════════════════════════"
-          echo "  ✅  Odysseus.ipa built successfully!"
-          echo "════════════════════════════════════════════════════════"
-          echo ""
-          echo "  This is an UNSIGNED IPA (no Apple Developer account needed)."
-          echo "  Install options:"
-          echo ""
-          echo "  1. AltStore (free, personal use)"
-          echo "     → https://altstore.io"
-          echo "     → Sideload Odysseus.ipa via AltStore on your iPhone/iPad"
-          echo ""
-          echo "  2. Sideloadly (free)"
-          echo "     → https://sideloadly.io"
-          echo "     → Drag Odysseus.ipa into Sideloadly"
-          echo ""
-          echo "  3. Apple Developer account (paid \$99/yr)"
-          echo "     → Re-sign the IPA with your provisioning profile"
-          echo "     → Deploy via TestFlight or direct install"
-          echo ""
-          echo "  Once installed, open the app and point it at your"
-          echo "  Odysseus server URL in the app settings."
-          echo "════════════════════════════════════════════════════════"
+          name: GameHub-IPA
+          path: GameHub/build/GameHub.ipa
